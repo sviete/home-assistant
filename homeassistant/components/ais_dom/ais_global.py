@@ -121,6 +121,12 @@ G_AIS_IMG_PATH = "/data/data/pl.sviete.dom/files/home/AIS/www/img/"
 G_LOG_SETTINGS_INFO_FILE = "/.dom/.ais_log_settings_info"
 G_DB_SETTINGS_INFO_FILE = "/.dom/.ais_db_settings_info"
 
+# mqtt
+G_AIS_MQTT_CONFIG_DIR_PATH = "/data/data/pl.sviete.dom/files/usr/etc/mosquitto"
+G_AIS_MQTT_CONFIG_FILE_PATH = G_AIS_MQTT_CONFIG_DIR_PATH + "/mosquitto.conf"
+G_AIS_MQTT_CONFIG_INCLUDE_DIR_PATH = G_AIS_MQTT_CONFIG_DIR_PATH + "/mqtt_conf.d"
+G_AIS_SUPLA_MQTT_CONFIG_FILE_NAME = "supla.conf"
+
 G_AUTOMATION_CONFIG = None
 
 
@@ -312,39 +318,53 @@ def has_front_clock():
 
 
 # save ais mqtt connection settings
-def save_ais_mqtt_connection_settings(mqtt_bridge_settings=None):
-    with open(
-        "/data/data/pl.sviete.dom/files/usr/etc/mosquitto/mosquitto.conf", "w"
-    ) as conf_file:
+def save_ais_mqtt_connection_settings(config_file_name, mqtt_bridge_settings=None):
+    with open(G_AIS_MQTT_CONFIG_FILE_PATH, "w") as conf_file:
         # 1. standard ais settings
         conf_file.write("# AIS Config file for mosquitto on gate\n")
         conf_file.write("listener 1883 0.0.0.0\n")
         conf_file.write("allow_anonymous true\n")
+        conf_file.write("include_dir " + G_AIS_MQTT_CONFIG_INCLUDE_DIR_PATH + "\n")
+        if not os.path.exists(G_AIS_MQTT_CONFIG_INCLUDE_DIR_PATH):
+            os.makedirs(G_AIS_MQTT_CONFIG_INCLUDE_DIR_PATH, exist_ok=True)
+
         if mqtt_bridge_settings is not None:
-            # 2. SUPLA MQTT bridge connection settings
-            conf_file.write("\n")
-            conf_file.write("# SUPLA MQTT bridge connection\n")
-            conf_file.write("connection bridge-" + get_sercure_android_id_dom() + "\n")
-            conf_file.write(
-                "address "
-                + mqtt_bridge_settings["host"]
-                + ":"
-                + str(mqtt_bridge_settings["port"])
-                + "\n"
-            )
-            conf_file.write("topic supla/# in\n")
-            conf_file.write("topic homeassistant/# in\n")
-            conf_file.write("topic supla/+/devices/+/channels/+/execute_action out\n")
-            conf_file.write("topic supla/+/devices/+/channels/+/set/+ out\n")
-            conf_file.write(
-                "remote_username " + mqtt_bridge_settings["username"] + "\n"
-            )
-            conf_file.write(
-                "remote_password " + mqtt_bridge_settings["password"] + "\n"
-            )
-            conf_file.write(
-                "bridge_cafile /data/data/pl.sviete.dom/files/usr/etc/tls/cert.pem\n"
-            )
+            # 2. MQTT bridge connection settings
+            with open(
+                G_AIS_MQTT_CONFIG_INCLUDE_DIR_PATH + "/" + config_file_name, "w"
+            ) as conf_bridge_file:
+                conf_bridge_file.write("\n")
+                conf_bridge_file.write(
+                    "# MQTT bridge connection " + config_file_name + "\n"
+                )
+                conf_bridge_file.write(
+                    "connection bridge-" + get_sercure_android_id_dom() + "\n"
+                )
+                conf_bridge_file.write(
+                    "address "
+                    + mqtt_bridge_settings["host"]
+                    + ":"
+                    + str(mqtt_bridge_settings["port"])
+                    + "\n"
+                )
+                conf_bridge_file.write("topic supla/# in\n")
+                conf_bridge_file.write("topic homeassistant/# in\n")
+                conf_bridge_file.write(
+                    "topic supla/+/devices/+/channels/+/execute_action out\n"
+                )
+                conf_bridge_file.write("topic supla/+/devices/+/channels/+/set/+ out\n")
+                conf_bridge_file.write(
+                    "remote_username " + mqtt_bridge_settings["username"] + "\n"
+                )
+                conf_bridge_file.write(
+                    "remote_password " + mqtt_bridge_settings["password"] + "\n"
+                )
+                conf_bridge_file.write(
+                    "bridge_cafile /data/data/pl.sviete.dom/files/usr/etc/tls/cert.pem\n"
+                )
+        else:
+            # clear the config by removing file
+            os.remove(G_AIS_MQTT_CONFIG_INCLUDE_DIR_PATH + "/" + config_file_name)
 
 
 set_global_my_ip(None)

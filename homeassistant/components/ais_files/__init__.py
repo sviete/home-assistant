@@ -477,6 +477,7 @@ class AisDbConfigView(HomeAssistantView):
         # History
         if db_connection["dbShowHistory"]:
             return_info += " Historia włączona."
+
             if not panel_history:
                 hass.components.frontend.async_register_built_in_panel(
                     "history", "history", "hass:poll-box"

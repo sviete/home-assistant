@@ -1,6 +1,7 @@
 """Support for 1-Wire environment sensors."""
 from __future__ import annotations
 
+import asyncio
 from glob import glob
 import logging
 import os
@@ -255,7 +256,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up 1-Wire platform."""
-    onewirehub = hass.data[DOMAIN][config_entry.unique_id]
+    onewirehub = hass.data[DOMAIN][config_entry.entry_id]
     entities = await hass.async_add_executor_job(
         get_entities, onewirehub, config_entry.data
     )
@@ -426,11 +427,31 @@ class OneWireDirectSensor(OneWireSensor):
         """Return the state of the entity."""
         return self._state
 
-    def update(self):
+    async def get_temperature(self):
+        """Get the latest data from the device."""
+        attempts = 1
+        while True:
+            try:
+                return await self.hass.async_add_executor_job(
+                    self._owsensor.get_temperature
+                )
+            except UnsupportResponseException as ex:
+                _LOGGER.debug(
+                    "Cannot read from sensor %s (retry attempt %s): %s",
+                    self._device_file,
+                    attempts,
+                    ex,
+                )
+                await asyncio.sleep(0.2)
+                attempts += 1
+                if attempts > 10:
+                    raise
+
+    async def async_update(self):
         """Get the latest data from the device."""
         value = None
         try:
-            self._value_raw = self._owsensor.get_temperature()
+            self._value_raw = await self.get_temperature()
             value = round(float(self._value_raw), 1)
         except (
             FileNotFoundError,

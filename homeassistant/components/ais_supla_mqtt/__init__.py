@@ -1,6 +1,7 @@
 """Support for AIS SUPLA MQTT"""
 import asyncio
 import logging
+import os
 
 from homeassistant.components.ais_dom import ais_global
 from homeassistant.config_entries import ConfigEntry
@@ -23,13 +24,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.data[DOMAIN][entry.entry_id] = entry
 
     # after reload from app the the async_unload_entry is called
-    # check if we still have bridge definition
-    bridge_settings = "connection bridge-" + ais_global.get_sercure_android_id_dom()
-    conf_file = open("/data/data/pl.sviete.dom/files/usr/etc/mosquitto/mosquitto.conf")
-    if bridge_settings not in conf_file:
-        _LOGGER.info("Connection bridge not exists in mosquitto.conf, reload")
-        mqtt_broker_settings = entry.data
-        ais_global.save_ais_mqtt_connection_settings(mqtt_broker_settings)
+    # check if we still have bridge definition in file
+    if not os.path.isfile(
+        ais_global.G_AIS_MQTT_CONFIG_INCLUDE_DIR_PATH
+        + "/"
+        + ais_global.G_AIS_SUPLA_MQTT_CONFIG_FILE_NAME
+    ):
+        _LOGGER.info("Connection bridge not exists in mosquitto.conf, recreate")
+        ais_global.save_ais_mqtt_connection_settings(
+            ais_global.G_AIS_SUPLA_MQTT_CONFIG_FILE_NAME, entry.data
+        )
         # restart mqtt broker
         await hass.services.async_call(
             "ais_shell_command", "restart_pm2_service", {"service": "mqtt"}
@@ -47,16 +51,17 @@ async def async_migrate_entry(hass, config_entry: ConfigEntry):
     """Migrate old entry."""
     _LOGGER.info("Migrating from version %s", config_entry.version)
 
-    if config_entry.version == 1:
+    if config_entry.version < 3:
         # save mqtt configuration add bridge definition
-        mqtt_broker_settings = config_entry.data
-        ais_global.save_ais_mqtt_connection_settings(mqtt_broker_settings)
+        ais_global.save_ais_mqtt_connection_settings(
+            ais_global.G_AIS_SUPLA_MQTT_CONFIG_FILE_NAME, config_entry.data
+        )
 
         # restart mqtt broker
         await hass.services.async_call(
             "ais_shell_command", "restart_pm2_service", {"service": "mqtt"}
         )
-        config_entry.version = 2
+        config_entry.version = 3
 
     _LOGGER.info("Migration to version %s successful", config_entry.version)
 
@@ -66,7 +71,9 @@ async def async_migrate_entry(hass, config_entry: ConfigEntry):
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Unload a config entry."""
     # remove mqtt bridge settings
-    ais_global.save_ais_mqtt_connection_settings(None)
+    ais_global.save_ais_mqtt_connection_settings(
+        ais_global.G_AIS_SUPLA_MQTT_CONFIG_FILE_NAME, None
+    )
 
     # restart mqtt broker
     await hass.services.async_call(
