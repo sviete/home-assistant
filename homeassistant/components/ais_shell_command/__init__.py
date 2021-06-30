@@ -397,6 +397,9 @@ async def _set_ais_secure_android_id_dom(hass, call):
         },
     )
 
+    # check the gate model
+    hass.states.async_set("sensor.ais_gate_model", ais_global.get_ais_gate_model())
+
 
 async def _init_local_sdcard(hass, call):
     if not ais_global.has_root():
@@ -458,13 +461,22 @@ async def _execute_restart(hass, call):
 
 async def _restart_pm2_service(hass, call):
     service = call.data["service"]
+
     await hass.services.async_call(
         "ais_ai_service", "say_it", {"text": "Restartuje serwis " + service}
     )
-
-    subprocess.Popen(
-        "pm2 restart " + service, shell=True, stdout=None, stderr=None  # nosec
-    )
+    cmd_to_run = "pm2 restart " + service
+    if service == "zwave":
+        cmd_to_run = (
+            "pm2 restart zwave || pm2 start /data/data/pl.sviete.dom/files/home/zwavejs2mqtt/server/bin/www.js "
+            "--name zwave --output /dev/null --error /dev/null --restart-delay=120000"
+        )
+    elif service == "zigbee":
+        cmd_to_run = (
+            "pm2 restart zigbee || pm2 start /data/data/pl.sviete.dom/files/home/zigbee2mqtt/index.js "
+            "--name zigbee --output /dev/null --error /dev/null --restart-delay=120000"
+        )
+    await _run(cmd_to_run)
 
 
 async def _execute_stop(hass, call):
@@ -483,17 +495,17 @@ async def _flush_logs(hass, call):
     await _run("rm -rf /data/data/pl.sviete.dom/files/home/.cache/pip")
     # recorder.purge if recorder exists
     if hass.services.has_service("recorder", "purge"):
-        keep_days = 1
+        keep_days = 5
         if ais_global.G_DB_SETTINGS_INFO is not None:
             # take keep days from settings
             if "dbKeepDays" in ais_global.G_DB_SETTINGS_INFO:
                 keep_days = int(ais_global.G_DB_SETTINGS_INFO["dbKeepDays"])
-            # allow to store only 1 day in memory
+            # allow to store only 5 days in memory
             if "dbUrl" in ais_global.G_DB_SETTINGS_INFO:
                 if ais_global.G_DB_SETTINGS_INFO["dbUrl"].startswith(
                     "sqlite:///:memory:"
                 ):
-                    keep_days = 1
+                    keep_days = 5
 
         await hass.services.async_call(
             "recorder", "purge", {"keep_days": keep_days, "repack": True}

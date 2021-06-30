@@ -5,6 +5,8 @@ For more details about this component, please refer to the documentation at
 https://www.ai-speaker.com
 """
 import asyncio
+import fileinput
+import json
 import logging
 import os
 import platform
@@ -30,17 +32,22 @@ if platform.machine() == "x86_64":
     G_USB_DRIVES_PATH = "/media/andrzej"
 
 
-async def _run(cmd):
-    cmd_process = await asyncio.create_subprocess_shell(
-        cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
+async def _run(hass, cmd):
+    if not ais_global.G_USB_SETTINGS_INFO.get(
+        "usbAutoStartServices", True
+    ) and cmd.startswith("pm2"):
+        pass
+    else:
+        cmd_process = await asyncio.create_subprocess_shell(
+            cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
 
-    stdout, stderr = await cmd_process.communicate()
+        stdout, stderr = await cmd_process.communicate()
 
-    if stdout:
-        _LOGGER.info(f"[stdout]\n{stdout.decode()}")
-    if stderr:
-        _LOGGER.info(f"[stderr]\n{stderr.decode()}")
+        if stdout:
+            _LOGGER.info(f"[stdout]\n{stdout.decode()}")
+        if stderr:
+            _LOGGER.info(f"[stderr]\n{stderr.decode()}")
 
 
 # check if usb is valid external drive
@@ -63,56 +70,162 @@ def get_device_info(pathname):
     for d in ais_global.G_USB_DEVICES:
         if d["bus"] == bus and d["device"] == device:
             return d
-
     return None
 
 
-async def prepare_usb_device(hass, device_info):
-    # start zigbee2mqtt service
-    # add info in app
-    if device_info["id"] in G_ZIGBEE_DEVICES_ID:
-        # Register the built-in zigbee panel
-        # hass.components.frontend.async_register_built_in_panel(
-        #     "aiszigbee",
-        #     require_admin=True,
-        #     sidebar_title="Zigbee",
-        #     sidebar_icon="mdi:zigbee",
-        #     update=True,
-        # )
+def get_device_number(devoce_id):
+    # 1. ls -l /dev/ttyACM to find number 166:0
+    # 2. use this number in ls -l /sys/dev/char/166:0
+    # 3. cat /sys/dev/char/166:0/../../../idProduct
+    # find /sys/devices -name 'ttyACM*' -exec cat '{}/../../../idProduct' \;
+    # find /sys/devices -name 'ttyACM*' -exec cat {}/../../../idProduct {}/../../../idVendor \;
+    tty_acm_paths = (
+        subprocess.check_output(
+            "find /sys/devices -name 'ttyACM*'",
+            shell=True,  # nosec
+        )
+        .decode("utf-8")
+        .strip()
+    )
+    for line in tty_acm_paths.split("\n"):
+        usb_vendor = (
+            subprocess.check_output(
+                "cat " + line + "/../../../idVendor",
+                shell=True,  # nosec
+            )
+            .decode("utf-8")
+            .strip()
+        )
+        usb_product = (
+            subprocess.check_output(
+                "cat " + line + "/../../../idProduct",
+                shell=True,  # nosec
+            )
+            .decode("utf-8")
+            .strip()
+        )
+        if usb_vendor + ":" + usb_product == devoce_id:
+            return line.split("/")[-1]
+    return None
 
+
+async def say_it(hass, text):
+    if not ais_global.G_USB_SETTINGS_INFO.get("usbVoiceNotification", True):
+        pass
+    else:
+        await hass.services.async_call(
+            "ais_ai_service",
+            "say_it",
+            {"text": text},
+        )
+
+
+async def prepare_usb_device(hass, device_info):
+    # ZIGBEE
+    if device_info["id"] in G_ZIGBEE_DEVICES_ID:
         # check if zigbee already exists
+        # add info in app
         if not os.path.isdir("/data/data/pl.sviete.dom/files/home/zigbee2mqtt"):
-            await hass.services.async_call(
-                "ais_ai_service",
-                "say_it",
-                {
-                    "text": "Nie znaleziono pakietu Zigbee2Mqtt zainstaluj go przed pierwszym uruchomieniem usługi "
-                    "Zigbee. Szczegóły w dokumentacji Asystenta domowego."
-                },
+            await say_it(
+                hass,
+                "Nie znaleziono pakietu Zigbee2Mqtt zainstaluj go przed pierwszym uruchomieniem usługi "
+                "Zigbee. Szczegóły w dokumentacji Asystenta domowego.",
             )
             return
-
-        # fix permitions
+        # fix permissions
         uid = str(os.getuid())
         gid = str(os.getgid())
         if ais_global.has_root():
-            await _run("su -c 'chown " + uid + ":" + gid + " /dev/ttyACM0'")
-        # TODO check the /dev/ttyACM.. number
+            await _run(hass, "su -c 'chown " + uid + ":" + gid + " /dev/ttyACM*'")
         if ais_global.has_root():
-            await _run("su -c 'chmod 777 /dev/ttyACM0'")
+            await _run(hass, "su -c 'chmod 777 /dev/ttyACM*'")
 
-        # restart-delay 120000 milisecond == 2 minutes
+        # set the adapter
+        adapter = "null"
+        if device_info["id"] == "0451:16a8":
+            adapter = "zstack"
+        if device_info["id"] == "1cf1:0030":
+            adapter = "deconz"
+        # change zigbee settings
+        stage_no = 0
+        with fileinput.FileInput(
+            "/data/data/pl.sviete.dom/files/home/zigbee2mqtt/data/configuration.yaml",
+            inplace=True,
+            backup=".bak",
+        ) as file:
+            for line in file:
+                if line.startswith("serial:"):
+                    stage_no = 1
+                if 0 < stage_no < 3:
+                    if line.startswith("  adapter:"):
+                        print("  adapter: " + adapter, end="\n")
+                        stage_no = stage_no + 1
+                    elif line.startswith("  port:"):
+                        device_num = get_device_number(device_info["id"])
+                        print("  port: /dev/" + device_num, end="\n")
+                        stage_no = stage_no + 1
+                    elif line.startswith("  ") or line.startswith("serial:"):
+                        print(line, end="")
+                    else:
+                        # configuration not correct... exit
+                        print(line, end="")
+                        stage_no = 3
+                else:
+                    print(line, end="")
+
+        # start zigbee2mqtt service
+        # restart-delay 120000 millisecond == 2 minutes
         cmd_to_run = (
             "pm2 restart zigbee || pm2 start /data/data/pl.sviete.dom/files/home/zigbee2mqtt/index.js "
             "--name zigbee --output /dev/null --error /dev/null --restart-delay=120000"
         )
-        await _run(cmd_to_run)
+        await _run(hass, cmd_to_run)
 
         #
         # if ais_global.G_AIS_START_IS_DONE:
-        await hass.services.async_call(
-            "ais_ai_service", "say_it", {"text": "Uruchomiono serwis zigbee"}
-        )
+        await say_it(hass, "Uruchomiono serwis zigbee")
+    # ZWAVE
+    if device_info["id"] == G_ZWAVE_ID:
+        # fix permissions
+        uid = str(os.getuid())
+        gid = str(os.getgid())
+        if ais_global.has_root():
+            await _run(hass, "su -c 'chown " + uid + ":" + gid + " /dev/ttyACM*'")
+            await _run(hass, "su -c 'chmod 777 /dev/ttyACM*'")
+        # zwavejs2mqtt exists?
+        if not os.path.isdir("/data/data/pl.sviete.dom/files/home/zwavejs2mqtt"):
+            await say_it(
+                hass,
+                "Nie znaleziono pakietu ZwaveJs2Mqtt zainstaluj go przed pierwszym uruchomieniem usługi "
+                "Zwave. Szczegóły w dokumentacji Asystenta domowego.",
+            )
+            return
+        else:
+            device_num = get_device_number(device_info["id"])
+            try:
+                with open(
+                    "/data/data/pl.sviete.dom/files/home/zwavejs2mqtt/store/settings.json"
+                ) as file_r:
+                    zwave_settings_json = json.load(file_r)
+
+                zwave_settings_json["zwave"]["port"] = "/dev/" + device_num
+
+                with open(
+                    "/data/data/pl.sviete.dom/files/home/zwavejs2mqtt/store/settings.json",
+                    "w",
+                ) as file_w:
+                    json.dump(zwave_settings_json, file_w)
+            except Exception as e:
+                _LOGGER.error("Zwave settings error, exception: " + str(e))
+                await say_it(hass, "Sprawdź ustawienia Zwave w aplikacji.")
+
+            cmd_to_run = (
+                "pm2 restart zwave || pm2 start /data/data/pl.sviete.dom/files/home/zwavejs2mqtt/server/bin/www.js "
+                "--name zwave --output /dev/null --error /dev/null --restart-delay=120000"
+            )
+            await _run(hass, cmd_to_run)
+            #
+            await say_it(hass, "Uruchomiono serwis zwave")
 
 
 async def remove_usb_device(hass, device_info):
@@ -121,13 +234,11 @@ async def remove_usb_device(hass, device_info):
         ais_global.G_USB_DEVICES.remove(device_info)
 
     if device_info["id"] in G_ZIGBEE_DEVICES_ID:
-        # Unregister the built-in zigbee panel
-        # hass.components.frontend.async_remove_panel("aiszigbee")
-        # stop pm2 zigbee service
-        await _run("pm2 delete zigbee")
-        await hass.services.async_call(
-            "ais_ai_service", "say_it", {"text": "Zatrzymano serwis zigbee"}
-        )
+        await _run(hass, "pm2 delete zigbee")
+        await say_it(hass, "Zatrzymano serwis zigbee")
+    elif device_info["id"] == G_ZWAVE_ID:
+        await _run(hass, "pm2 delete zwave")
+        await say_it(hass, "Zatrzymano serwis zwave")
 
 
 async def async_setup(hass, config):
@@ -147,11 +258,7 @@ async def async_setup(hass, config):
                         ais_global.G_REMOTE_DRIVES_DOM_PATH + "/dysk_" + str(drive_id),
                     )
                     hass.async_add_job(
-                        hass.services.async_call(
-                            "ais_ai_service",
-                            "say_it",
-                            {"text": "Dodano wymienny dysk_" + str(drive_id)},
-                        )
+                        say_it(hass, "Dodano wymienny dysk_" + str(drive_id))
                     )
                     # fill the list
                     hass.async_add_job(
@@ -174,11 +281,7 @@ async def async_setup(hass, config):
                             and "Mass Storage" not in device_info["info"]
                         ):
                             text = "Dodano: " + device_info["info"]
-                            hass.async_add_job(
-                                hass.services.async_call(
-                                    "ais_ai_service", "say_it", {"text": text}
-                                )
-                            )
+                            hass.async_add_job(say_it(hass, text))
                     # reset flag
                     ais_global.G_USB_INTERNAL_MIC_RESET = False
                     # prepare device
@@ -196,13 +299,7 @@ async def async_setup(hass, config):
                         os.system(
                             "rm " + ais_global.G_REMOTE_DRIVES_DOM_PATH + "/" + str(f)
                         )
-                        hass.async_add_job(
-                            hass.services.async_call(
-                                "ais_ai_service",
-                                "say_it",
-                                {"text": "Usunięto wymienny " + str(f)},
-                            )
-                        )
+                        hass.async_add_job(say_it(hass, "Usunięto wymienny " + str(f)))
                         # fill the list
                         hass.async_add_job(
                             hass.services.async_call("ais_usb", "ls_flash_drives")
@@ -283,11 +380,7 @@ async def async_setup(hass, config):
                             and "Mass Storage" not in device_info["info"]
                         ):
                             text = "Usunięto: " + device_info["info"]
-                            hass.async_add_job(
-                                hass.services.async_call(
-                                    "ais_ai_service", "say_it", {"text": text}
-                                )
-                            )
+                            hass.async_add_job(say_it(hass, text))
                     # remove device
                     hass.async_add_job(remove_usb_device(hass, device_info))
 
@@ -304,21 +397,20 @@ async def async_setup(hass, config):
 
     async def stop_devices(call):
         # remove zigbee service on start - to prevent pm2 for restarting when usb is not connected
-        await _run("pm2 delete zigbee")
+        await _run(hass, "pm2 delete zigbee")
         #
 
     async def lsusb(call):
         # check if the call was from scheduler or service / web app
         ais_global.G_USB_DEVICES = _lsusb()
         for device in ais_global.G_USB_DEVICES:
-            if device["id"] in G_ZIGBEE_DEVICES_ID:
-                # USB zigbee dongle
-                await prepare_usb_device(hass, device)
+            # check if USB is zigbee or zwave dongle
+            await prepare_usb_device(hass, device)
 
     async def mount_external_drives(call):
         """mount_external_drives."""
         try:
-            await _run("rm " + ais_global.G_REMOTE_DRIVES_DOM_PATH + "/*")
+            await _run(hass, "rm " + ais_global.G_REMOTE_DRIVES_DOM_PATH + "/*")
             dirs = os.listdir(G_USB_DRIVES_PATH)
             for d in dirs:
                 os.symlink(
@@ -345,12 +437,35 @@ async def async_setup(hass, config):
             },
         )
 
+    async def check_ais_usb_settings(call):
+        # get USB settings from file
+        file_path = hass.config.config_dir + ais_global.G_USB_SETTINGS_INFO_FILE
+        try:
+            with open(file_path) as usb_settings_file:
+                ais_global.G_USB_SETTINGS_INFO = json.loads(usb_settings_file.read())
+        except Exception:
+            with open(
+                hass.config.config_dir + ais_global.G_USB_SETTINGS_INFO_FILE, "w"
+            ) as outfile:
+                json.dump(
+                    {"usbAutoStartServices": True, "usbVoiceNotification": True},
+                    outfile,
+                )
+            ais_global.G_USB_SETTINGS_INFO = {
+                "usbAutoStartServices": True,
+                "usbVoiceNotification": True,
+            }
+
     hass.services.async_register(DOMAIN, "stop_devices", stop_devices)
     hass.services.async_register(DOMAIN, "lsusb", lsusb)
     hass.services.async_register(DOMAIN, "mount_external_drives", mount_external_drives)
     hass.services.async_register(DOMAIN, "ls_flash_drives", ls_flash_drives)
+    hass.services.async_register(
+        DOMAIN, "check_ais_usb_settings", check_ais_usb_settings
+    )
 
     hass.async_add_job(usb_load_notifiers)
+
     return True
 
 

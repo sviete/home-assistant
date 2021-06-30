@@ -3,7 +3,7 @@
 
 cd "$(dirname "$0")/.."
 
-head -n 5 homeassistant/const.py | tail -n 1 | grep PATCH_VERSION > /dev/null
+head -n 7 homeassistant/const.py | tail -n 1 | grep PATCH_VERSION > /dev/null
 
 if [ $? -eq 1 ]
 then
@@ -28,5 +28,5 @@ then
 fi
 
 rm -rf dist build
-python3 setup.py sdist bdist_wheel
-python3 -m twine upload dist/* --skip-existing
+python3.9 setup.py sdist bdist_wheel
+python3.9 -m twine upload dist/* --skip-existing

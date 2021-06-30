@@ -51,8 +51,6 @@ class HassIOIngress(HomeAssistantView):
 
     def _create_url(self, token: str, path: str) -> str:
         """Create URL to service."""
-        if path is None or path == "":
-            path = "control-panel"
         return f"http://{self._host}:{self._port}/{path}"
 
     async def _handle(
@@ -202,10 +200,12 @@ def _init_header(
         headers[name] = value
 
     # Inject token
+    # headers[X_HASSIO] = os.environ.get("HASSIO_TOKEN", "")
     headers[X_HASSIO] = token
 
     # Ingress information
-    headers[X_INGRESS_PATH] = f"/api/zwave2mqtt/{token}"
+    # headers[X_INGRESS_PATH] = f"/api/zwave2mqtt/{token}"
+    headers["X-External-Path"] = f"/api/zwave2mqtt/{token}"
 
     # Set X-Forwarded-For
     forward_for = request.headers.get(hdrs.X_FORWARDED_FOR)
